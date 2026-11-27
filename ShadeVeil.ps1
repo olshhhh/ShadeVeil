@@ -13,8 +13,10 @@ if (-not $Cli -and ([System.Threading.Thread]::CurrentThread.GetApartmentState()
     if (-not [string]::IsNullOrWhiteSpace($Profile)) {
         $relaunchArgs += @('-Profile', $Profile)
     }
-    & powershell.exe @relaunchArgs
-    exit $LASTEXITCODE
+    $shellExe = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    if (-not (Test-Path -LiteralPath $shellExe)) { $shellExe = 'powershell.exe' }
+    $proc = Start-Process -FilePath $shellExe -ArgumentList $relaunchArgs -NoNewWindow -Wait -PassThru
+    exit $proc.ExitCode
 }
 
 $scriptRoot = $PSScriptRoot
@@ -27,6 +29,10 @@ Import-Module (Join-Path $coreDir 'ConfigManager.psm1') -Force -DisableNameCheck
 Import-Module (Join-Path $coreDir 'OverlayManager.psm1') -Force -DisableNameChecking
 Import-Module (Join-Path $uiDir 'GuiController.psm1') -Force -DisableNameChecking
 Import-Module (Join-Path $uiDir 'CliController.psm1') -Force -DisableNameChecking
+
+if (-not $Cli) {
+    Set-DpiAwarenessSafe
+}
 
 $config = Get-ShadeConfig
 $catalog = Get-ShadePresetsCatalog -DataDirectory $dataDir
@@ -59,6 +65,7 @@ if ($Cli) {
     if ($cliOutcome -ne 'LaunchGui') {
         exit 0
     }
+    Set-DpiAwarenessSafe
 }
 
 $xamlPath = Join-Path $uiDir 'MainWindow.xaml'

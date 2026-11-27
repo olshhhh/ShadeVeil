@@ -5,7 +5,8 @@ param(
     [string]$Branch = 'main',
     [string]$BaseUrl = '',
     [switch]$Cli,
-    [string]$Profile = ''
+    [string]$Profile = '',
+    [switch]$Test
 )
 
 Set-StrictMode -Version Latest
@@ -32,16 +33,18 @@ $manifestFiles = @(
     'UI/MainWindow.xaml',
     'UI/GuiController.psm1',
     'UI/CliController.psm1',
-    'Data/presets.json'
+    'Data/presets.json',
+    'Tests/Verify-ShadeVeil.ps1'
 )
 
 $resolvedBaseUrl = if ([string]::IsNullOrWhiteSpace($BaseUrl)) {
     "https://raw.githubusercontent.com/$RepoOwner/$RepoName/$Branch"
 }
 else {
-    $BaseUrl.TrimEnd('/')
+    $BaseUrl.TrimEnd('/', '\')
 }
 
+$isRemoteHttp = ($resolvedBaseUrl -match '^https?://')
 $volatileRoot = Join-Path $env:TEMP ("$appName`_" + [Guid]::NewGuid().ToString('N'))
 
 try {
@@ -66,10 +69,16 @@ try {
                 [void](New-Item -Path $destDir -ItemType Directory -Force)
             }
 
-            $downloadUrl = "$resolvedBaseUrl/$relPath`?cb=$cacheBust"
-            $webClient.Headers.Clear()
-            $webClient.Headers.Add('Cache-Control', 'no-cache')
-            $content = $webClient.DownloadString($downloadUrl)
+            if ($isRemoteHttp) {
+                $downloadUrl = "$resolvedBaseUrl/$relPath`?cb=$cacheBust"
+                $webClient.Headers.Clear()
+                $webClient.Headers.Add('Cache-Control', 'no-cache')
+                $content = $webClient.DownloadString($downloadUrl)
+            }
+            else {
+                $localSrc = Join-Path $resolvedBaseUrl $normalizedRel
+                $content = [System.IO.File]::ReadAllText($localSrc, [System.Text.Encoding]::UTF8)
+            }
 
             $ext = [System.IO.Path]::GetExtension($relPath).ToLowerInvariant()
             $encoding = if ($ext -in @('.ps1', '.psm1')) { $utf8WithBom } else { $utf8NoBom }
@@ -78,6 +87,24 @@ try {
     }
     finally {
         $webClient.Dispose()
+    }
+
+    $shellExe = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    if (-not (Test-Path -LiteralPath $shellExe)) {
+        $shellExe = 'powershell.exe'
+    }
+
+    if ($Test) {
+        $testScript = Join-Path $volatileRoot 'Tests\Verify-ShadeVeil.ps1'
+        Write-Host "[$appName] Ejecutando verificacion de solo lectura..." -ForegroundColor Cyan
+        $proc = Start-Process -FilePath $shellExe -ArgumentList @(
+            '-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', "`"$testScript`""
+        ) -NoNewWindow -Wait -PassThru
+
+        if ($proc.ExitCode -ne 0) {
+            throw "Las pruebas de verificacion fallaron con codigo: $($proc.ExitCode)"
+        }
+        return
     }
 
     $orchestratorPath = Join-Path $volatileRoot 'ShadeVeil.ps1'
@@ -89,21 +116,22 @@ try {
         '-NoProfile',
         '-STA',
         '-ExecutionPolicy', 'Bypass',
-        '-File', $orchestratorPath
+        '-File', "`"$orchestratorPath`""
     )
 
     if ($Cli) {
         $launchArgs += '-Cli'
     }
     if (-not [string]::IsNullOrWhiteSpace($Profile)) {
-        $launchArgs += @('-Profile', $Profile)
+        $escapedProfile = $Profile.Replace('"', '\"')
+        $launchArgs += @('-Profile', "`"$escapedProfile`"")
     }
 
     Write-Host "[$appName] Iniciando aplicacion..." -ForegroundColor Green
-    & powershell.exe @launchArgs
+    $proc = Start-Process -FilePath $shellExe -ArgumentList $launchArgs -NoNewWindow -Wait -PassThru
 
-    if ($LASTEXITCODE -ne 0) {
-        throw "ShadeVeil finalizo con codigo de salida inesperado: $LASTEXITCODE"
+    if ($proc.ExitCode -ne 0) {
+        throw "ShadeVeil finalizo con codigo de salida inesperado: $($proc.ExitCode)"
     }
 }
 catch {
@@ -131,7 +159,9 @@ catch {
     Write-Host ''
     Write-Host "[$appName] ERROR CRITICO: $errMessage" -ForegroundColor Red
     Write-Host "Detalle registrado en: $lastErrorLog" -ForegroundColor Yellow
-    [void](Read-Host 'Presiona ENTER para cerrar')
+    if ([System.Environment]::UserInteractive) {
+        [void](Read-Host 'Presiona ENTER para cerrar')
+    }
 }
 finally {
     if (Test-Path -LiteralPath $volatileRoot) {

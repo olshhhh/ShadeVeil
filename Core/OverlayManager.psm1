@@ -6,13 +6,15 @@ Add-Type -AssemblyName WindowsBase
 Add-Type -AssemblyName System.Windows.Forms
 
 $script:OverlayState = @{
-    Windows          = New-Object System.Collections.ArrayList
-    CurrentOpacity   = 0.45
-    CurrentTintHex   = '#000000'
-    CurrentScope     = 'AllScreens'
-    IsEnabled        = $false
-    MainWindow       = $null
-    KeepPanelAbove   = $true
+    Windows            = New-Object System.Collections.ArrayList
+    BrushCache         = @{}
+    CurrentOpacity     = 0.45
+    CurrentTintHex     = '#000000'
+    CurrentScope       = 'AllScreens'
+    IsEnabled          = $false
+    MainWindow         = $null
+    KeepPanelAbove     = $true
+    LastForegroundHwnd = [IntPtr]::Zero
 }
 
 function Set-OverlayHostContext {
@@ -35,12 +37,17 @@ function Resolve-SolidBrush {
 
     $safeHex = '#000000'
     if ($HexColor -match '^#[0-9A-Fa-f]{6}$') {
-        $safeHex = $HexColor
+        $safeHex = $HexColor.ToUpperInvariant()
+    }
+
+    if ($script:OverlayState.BrushCache.ContainsKey($safeHex)) {
+        return $script:OverlayState.BrushCache[$safeHex]
     }
 
     $color = [System.Windows.Media.ColorConverter]::ConvertFromString($safeHex)
     $brush = New-Object System.Windows.Media.SolidColorBrush($color)
     $brush.Freeze()
+    $script:OverlayState.BrushCache[$safeHex] = $brush
     return $brush
 }
 
@@ -111,6 +118,7 @@ function Clear-Overlays {
         }
     }
     $script:OverlayState.Windows.Clear()
+    $script:OverlayState.LastForegroundHwnd = [IntPtr]::Zero
 }
 
 function Initialize-Overlays {
@@ -193,8 +201,9 @@ function Update-OverlayAppearance {
 
     $scopeChanged = ($script:OverlayState.CurrentScope -ne $MonitorScope)
     $countZero = ($script:OverlayState.Windows.Count -eq 0)
+    $didRebuild = ($RebuildScreens -or $scopeChanged -or $countZero)
 
-    if ($RebuildScreens -or $scopeChanged -or $countZero) {
+    if ($didRebuild) {
         Initialize-Overlays -MonitorScope $MonitorScope -TintHex $TintHex -OpacityFraction $fraction
     }
 
@@ -217,21 +226,28 @@ function Update-OverlayAppearance {
         if ($null -ne $brush) {
             $win.Background = $brush
         }
-        $win.Opacity = $fraction
+
+        if ($win.Opacity -ne $fraction) {
+            $win.Opacity = $fraction
+        }
 
         if ($IsEnabled -and $OpacityPercent -gt 0) {
-            if (-not $win.IsVisible) {
+            $wasHidden = (-not $win.IsVisible)
+            if ($wasHidden) {
                 $win.Show()
             }
-            $hwnd = (New-Object System.Windows.Interop.WindowInteropHelper($win)).Handle
-            if ($hwnd -ne [IntPtr]::Zero) {
-                Enable-WindowClickThrough -WindowHandle $hwnd
-                Set-OverlayWindowBounds -WindowHandle $hwnd `
-                    -InsertAfterHandle $insertAfter `
-                    -X ([int]$scr.Bounds.X) `
-                    -Y ([int]$scr.Bounds.Y) `
-                    -Width ([int]$scr.Bounds.Width) `
-                    -Height ([int]$scr.Bounds.Height)
+
+            if ($didRebuild -or $wasHidden) {
+                $hwnd = (New-Object System.Windows.Interop.WindowInteropHelper($win)).Handle
+                if ($hwnd -ne [IntPtr]::Zero) {
+                    Enable-WindowClickThrough -WindowHandle $hwnd
+                    Set-OverlayWindowBounds -WindowHandle $hwnd `
+                        -InsertAfterHandle $insertAfter `
+                        -X ([int]$scr.Bounds.X) `
+                        -Y ([int]$scr.Bounds.Y) `
+                        -Width ([int]$scr.Bounds.Width) `
+                        -Height ([int]$scr.Bounds.Height)
+                }
             }
         }
         else {
@@ -244,11 +260,17 @@ function Update-OverlayAppearance {
 
 function Sync-OverlayZOrder {
     [CmdletBinding()]
-    param()
+    param(
+        [bool]$Force = $false
+    )
 
     if (-not $script:OverlayState.IsEnabled) {
         return
     }
+
+    $fg = Get-ForegroundWindowHandle
+    $fgChanged = ($fg -ne $script:OverlayState.LastForegroundHwnd)
+    $script:OverlayState.LastForegroundHwnd = $fg
 
     $insertAfter = Get-PanelInsertAfterHandle
     foreach ($entry in @($script:OverlayState.Windows)) {
@@ -256,7 +278,10 @@ function Sync-OverlayZOrder {
         if ($null -ne $win -and $win.IsVisible) {
             $hwnd = (New-Object System.Windows.Interop.WindowInteropHelper($win)).Handle
             if ($hwnd -ne [IntPtr]::Zero) {
-                Set-OverlayTopMost -WindowHandle $hwnd -InsertAfterHandle $insertAfter
+                $needsSync = $Force -or $fgChanged -or (-not (Test-WindowIsTopMost -WindowHandle $hwnd))
+                if ($needsSync) {
+                    Set-OverlayTopMost -WindowHandle $hwnd -InsertAfterHandle $insertAfter
+                }
             }
         }
     }

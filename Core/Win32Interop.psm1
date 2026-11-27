@@ -59,6 +59,7 @@ namespace ShadeVeil
     public static class NativeMethods
     {
         public const int GWL_EXSTYLE = -20;
+        public const int WS_EX_TOPMOST = 0x00000008;
         public const int WS_EX_TRANSPARENT = 0x00000020;
         public const int WS_EX_TOOLWINDOW = 0x00000080;
         public const int WS_EX_LAYERED = 0x00080000;
@@ -113,6 +114,43 @@ namespace ShadeVeil
         [DllImport("user32.dll")]
         public static extern IntPtr GetForegroundWindow();
 
+        [DllImport("user32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool DestroyIcon(IntPtr hIcon);
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool SetProcessDPIAware();
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool SetProcessDpiAwarenessContext(IntPtr dpiContext);
+
+        public static void EnableDpiAwarenessSafe()
+        {
+            try
+            {
+                // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = -4
+                if (SetProcessDpiAwarenessContext(new IntPtr(-4)))
+                {
+                    return;
+                }
+            }
+            catch
+            {
+                // Older Windows 10 builds without SetProcessDpiAwarenessContext
+            }
+
+            try
+            {
+                SetProcessDPIAware();
+            }
+            catch
+            {
+                // Ignore if already configured
+            }
+        }
+
         private static long GetWindowLongSafe(IntPtr hWnd, int nIndex)
         {
             if (IntPtr.Size == 8)
@@ -134,6 +172,16 @@ namespace ShadeVeil
             }
         }
 
+        public static bool IsWindowTopMost(IntPtr hWnd)
+        {
+            if (hWnd == IntPtr.Zero)
+            {
+                return false;
+            }
+            long style = GetWindowLongSafe(hWnd, GWL_EXSTYLE);
+            return (style & WS_EX_TOPMOST) != 0;
+        }
+
         public static void EnableClickThrough(IntPtr hWnd)
         {
             if (hWnd == IntPtr.Zero)
@@ -141,8 +189,12 @@ namespace ShadeVeil
                 return;
             }
             long currentStyle = GetWindowLongSafe(hWnd, GWL_EXSTYLE);
-            long newStyle = currentStyle | WS_EX_TRANSPARENT | WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
-            SetWindowLongSafe(hWnd, GWL_EXSTYLE, newStyle);
+            long targetFlags = WS_EX_TRANSPARENT | WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
+            if ((currentStyle & targetFlags) == targetFlags)
+            {
+                return;
+            }
+            SetWindowLongSafe(hWnd, GWL_EXSTYLE, currentStyle | targetFlags);
         }
 
         public static void SetOverlayBoundsAndZOrder(IntPtr hWnd, IntPtr insertAfter, int x, int y, int width, int height)
@@ -169,6 +221,13 @@ namespace ShadeVeil
 '@
 
     Add-Type -TypeDefinition $nativeSource -ReferencedAssemblies @($winFormsAsm) -ErrorAction Stop
+}
+
+function Set-DpiAwarenessSafe {
+    [CmdletBinding()]
+    param()
+
+    [ShadeVeil.NativeMethods]::EnableDpiAwarenessSafe()
 }
 
 function Enable-WindowClickThrough {
@@ -215,6 +274,35 @@ function Set-OverlayTopMost {
     )
 
     [ShadeVeil.NativeMethods]::EnsureTopMost($WindowHandle, $InsertAfterHandle)
+}
+
+function Test-WindowIsTopMost {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [IntPtr]$WindowHandle
+    )
+
+    return [ShadeVeil.NativeMethods]::IsWindowTopMost($WindowHandle)
+}
+
+function Get-ForegroundWindowHandle {
+    [CmdletBinding()]
+    param()
+
+    return [ShadeVeil.NativeMethods]::GetForegroundWindow()
+}
+
+function Invoke-DestroyNativeIcon {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [IntPtr]$IconHandle
+    )
+
+    if ($IconHandle -ne [IntPtr]::Zero) {
+        [void][ShadeVeil.NativeMethods]::DestroyIcon($IconHandle)
+    }
 }
 
 function New-HotkeySink {
@@ -297,9 +385,13 @@ function Get-DisplayInventory {
 }
 
 Export-ModuleMember -Function @(
+    'Set-DpiAwarenessSafe',
     'Enable-WindowClickThrough',
     'Set-OverlayWindowBounds',
     'Set-OverlayTopMost',
+    'Test-WindowIsTopMost',
+    'Get-ForegroundWindowHandle',
+    'Invoke-DestroyNativeIcon',
     'New-HotkeySink',
     'Register-GlobalHotkey',
     'Unregister-GlobalHotkey',

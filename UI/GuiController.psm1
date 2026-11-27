@@ -7,18 +7,60 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
 $script:UiState = @{
-    Window               = $null
-    Controls             = @{}
-    Config               = $null
-    PresetsCatalog       = $null
-    SuppressEvents       = $false
-    NotifyIcon           = $null
-    TrayIconHandle       = $null
-    TrayToggleItem       = $null
-    HotkeySink           = $null
-    HotkeysRegistered    = $false
-    ZOrderTimer          = $null
+    Window                = $null
+    Controls              = @{}
+    Brushes               = @{}
+    Config                = $null
+    PresetsCatalog        = $null
+    SuppressEvents        = $false
+    IsClosing             = $false
+    LastVisualEnabled     = $null
+    LastActivePresetId    = $null
+    NotifyIcon            = $null
+    TrayIconHandle        = $null
+    TrayRawHIcon          = [IntPtr]::Zero
+    TrayToggleItem        = $null
+    HotkeySink            = $null
+    HotkeysRegistered     = $false
+    HeartbeatTimer        = $null
+    SaveTimer             = $null
     DisplayChangedHandler = $null
+    SingleInstanceMutex   = $null
+    WakeEvent             = $null
+}
+
+function Initialize-StaticUiBrushes {
+    [CmdletBinding()]
+    param()
+
+    if ($script:UiState.Brushes.Count -gt 0) {
+        return
+    }
+
+    $palette = @{
+        ActiveBadgeBg      = '#052E16'
+        ActiveBadgeBorder  = '#16A34A'
+        ActiveBadgeText    = '#4ADE80'
+        PausedBadgeBg      = '#271710'
+        PausedBadgeBorder  = '#D97706'
+        PausedBadgeText    = '#FBBF24'
+        PowerOnText        = '#93C5FD'
+        PowerOffText       = '#94A3B8'
+        PresetIdleBg       = '#161D29'
+        PresetIdleBorder   = '#263042'
+        PresetActiveBg     = '#17253B'
+        PresetActiveBorder = '#38BDF8'
+        FeedbackOk         = '#4ADE80'
+        FeedbackErr        = '#F87171'
+        FeedbackMuted      = '#64748B'
+    }
+
+    foreach ($key in $palette.Keys) {
+        $color = [System.Windows.Media.ColorConverter]::ConvertFromString($palette[$key])
+        $brush = New-Object System.Windows.Media.SolidColorBrush($color)
+        $brush.Freeze()
+        $script:UiState.Brushes[$key] = $brush
+    }
 }
 
 function New-ShadeVeilTrayIcon {
@@ -48,13 +90,34 @@ function New-ShadeVeilTrayIcon {
         $cutBrush.Dispose()
 
         $hIcon = $bmp.GetHicon()
-        $icon = [System.Drawing.Icon]::FromHandle($hIcon)
-        return $icon
+        $script:UiState.TrayRawHIcon = $hIcon
+        return [System.Drawing.Icon]::FromHandle($hIcon)
     }
     finally {
         $g.Dispose()
         $bmp.Dispose()
     }
+}
+
+function Get-OpacityComfortDescription {
+    [CmdletBinding()]
+    param(
+        [int]$OpacityPercent
+    )
+
+    if ($OpacityPercent -le 20) {
+        return 'Brillo apenas suavizado · Ideal de dia'
+    }
+    if ($OpacityPercent -le 45) {
+        return 'Lectura comoda · Los clics siguen funcionando normal'
+    }
+    if ($OpacityPercent -le 70) {
+        return 'Privacidad equilibrada · Reduce visibilidad lateral'
+    }
+    if ($OpacityPercent -le 85) {
+        return 'Oscurecimiento profundo · Ideal para noche o cine'
+    }
+    return 'Maxima privacidad · Pulsa Ctrl+Alt+D si deseas pausar'
 }
 
 function Update-DisplayCountLabel {
@@ -72,6 +135,43 @@ function Update-DisplayCountLabel {
             $lbl.Text = "$count pantallas detectadas"
         }
     }
+
+    $secRadio = $script:UiState.Controls['RadioScopeSecondary']
+    if ($null -ne $secRadio) {
+        $hasSecondary = ($count -gt 1)
+        $secRadio.IsEnabled = $hasSecondary
+        $secRadio.ToolTip = if ($hasSecondary) {
+            'Oscurecer unicamente las pantallas adicionales'
+        }
+        else {
+            'Conecta una segunda pantalla para habilitar esta opcion'
+        }
+    }
+}
+
+function Update-ActivePresetHighlight {
+    [CmdletBinding()]
+    param()
+
+    $activeId = [string]$script:UiState.Config.ActivePresetId
+    if ($script:UiState.LastActivePresetId -eq $activeId) {
+        return
+    }
+    $script:UiState.LastActivePresetId = $activeId
+
+    $brushes = $script:UiState.Brushes
+    foreach ($btnName in @('BtnPresetReading', 'BtnPresetPrivacy', 'BtnPresetFocus', 'BtnPresetStealth')) {
+        $btn = $script:UiState.Controls[$btnName]
+        if ($null -eq $btn) { continue }
+        if ([string]$btn.Tag -eq $activeId) {
+            $btn.Background = $brushes['PresetActiveBg']
+            $btn.BorderBrush = $brushes['PresetActiveBorder']
+        }
+        else {
+            $btn.Background = $brushes['PresetIdleBg']
+            $btn.BorderBrush = $brushes['PresetIdleBorder']
+        }
+    }
 }
 
 function Update-VisualStatus {
@@ -80,68 +180,81 @@ function Update-VisualStatus {
 
     $cfg = $script:UiState.Config
     $controls = $script:UiState.Controls
+    $brushes = $script:UiState.Brushes
 
-    $badge = $controls['StatusBadge']
-    $badgeText = $controls['StatusBadgeText']
-    $powerLabel = $controls['PowerLabel']
     $opacityText = $controls['OpacityPercentText']
-
     if ($null -ne $opacityText) {
         $opacityText.Text = "$($cfg.Opacity)%"
     }
 
-    if ($cfg.IsEnabled) {
-        if ($null -ne $badge) {
-            $bBg = New-Object System.Windows.Media.SolidColorBrush(([System.Windows.Media.ColorConverter]::ConvertFromString('#052E16')))
-            $bBr = New-Object System.Windows.Media.SolidColorBrush(([System.Windows.Media.ColorConverter]::ConvertFromString('#16A34A')))
-            $bBg.Freeze(); $bBr.Freeze()
-            $badge.Background = $bBg
-            $badge.BorderBrush = $bBr
-        }
-        if ($null -ne $badgeText) {
-            $tFg = New-Object System.Windows.Media.SolidColorBrush(([System.Windows.Media.ColorConverter]::ConvertFromString('#4ADE80')))
-            $tFg.Freeze()
-            $badgeText.Text = 'ACTIVO'
-            $badgeText.Foreground = $tFg
-        }
-        if ($null -ne $powerLabel) {
-            $pFg = New-Object System.Windows.Media.SolidColorBrush(([System.Windows.Media.ColorConverter]::ConvertFromString('#93C5FD')))
-            $pFg.Freeze()
-            $powerLabel.Text = 'Velo ON'
-            $powerLabel.Foreground = $pFg
-        }
-        if ($null -ne $script:UiState.TrayToggleItem) {
-            $script:UiState.TrayToggleItem.Text = 'Pausar Velo (Ctrl+Alt+D)'
-        }
+    $levelLbl = $controls['OpacityLevelLabel']
+    if ($null -ne $levelLbl) {
+        $levelLbl.Text = Get-OpacityComfortDescription -OpacityPercent ([int]$cfg.Opacity)
     }
-    else {
-        if ($null -ne $badge) {
-            $bBg = New-Object System.Windows.Media.SolidColorBrush(([System.Windows.Media.ColorConverter]::ConvertFromString('#271710')))
-            $bBr = New-Object System.Windows.Media.SolidColorBrush(([System.Windows.Media.ColorConverter]::ConvertFromString('#D97706')))
-            $bBg.Freeze(); $bBr.Freeze()
-            $badge.Background = $bBg
-            $badge.BorderBrush = $bBr
+
+    Update-ActivePresetHighlight
+
+    $enabledNow = [bool]$cfg.IsEnabled
+    if ($script:UiState.LastVisualEnabled -ne $enabledNow) {
+        $script:UiState.LastVisualEnabled = $enabledNow
+
+        $badge = $controls['StatusBadge']
+        $badgeText = $controls['StatusBadgeText']
+        $powerLabel = $controls['PowerLabel']
+
+        if ($enabledNow) {
+            if ($null -ne $badge) {
+                $badge.Background = $brushes['ActiveBadgeBg']
+                $badge.BorderBrush = $brushes['ActiveBadgeBorder']
+            }
+            if ($null -ne $badgeText) {
+                $badgeText.Text = 'ACTIVO'
+                $badgeText.Foreground = $brushes['ActiveBadgeText']
+            }
+            if ($null -ne $powerLabel) {
+                $powerLabel.Text = 'Velo ON'
+                $powerLabel.Foreground = $brushes['PowerOnText']
+            }
+            if ($null -ne $script:UiState.TrayToggleItem) {
+                $script:UiState.TrayToggleItem.Text = 'Pausar Velo (Ctrl+Alt+D)'
+            }
         }
-        if ($null -ne $badgeText) {
-            $tFg = New-Object System.Windows.Media.SolidColorBrush(([System.Windows.Media.ColorConverter]::ConvertFromString('#FBBF24')))
-            $tFg.Freeze()
-            $badgeText.Text = 'EN PAUSA'
-            $badgeText.Foreground = $tFg
-        }
-        if ($null -ne $powerLabel) {
-            $pFg = New-Object System.Windows.Media.SolidColorBrush(([System.Windows.Media.ColorConverter]::ConvertFromString('#94A3B8')))
-            $pFg.Freeze()
-            $powerLabel.Text = 'Velo OFF'
-            $powerLabel.Foreground = $pFg
-        }
-        if ($null -ne $script:UiState.TrayToggleItem) {
-            $script:UiState.TrayToggleItem.Text = 'Activar Velo (Ctrl+Alt+D)'
+        else {
+            if ($null -ne $badge) {
+                $badge.Background = $brushes['PausedBadgeBg']
+                $badge.BorderBrush = $brushes['PausedBadgeBorder']
+            }
+            if ($null -ne $badgeText) {
+                $badgeText.Text = 'EN PAUSA'
+                $badgeText.Foreground = $brushes['PausedBadgeText']
+            }
+            if ($null -ne $powerLabel) {
+                $powerLabel.Text = 'Velo OFF'
+                $powerLabel.Foreground = $brushes['PowerOffText']
+            }
+            if ($null -ne $script:UiState.TrayToggleItem) {
+                $script:UiState.TrayToggleItem.Text = 'Activar Velo (Ctrl+Alt+D)'
+            }
         }
     }
 
     if ($null -ne $script:UiState.NotifyIcon) {
-        $stateStr = if ($cfg.IsEnabled) { "Activo ($($cfg.Opacity)%)" } else { 'En pausa' }
+        $stateStr = if ($enabledNow) { "Activo ($($cfg.Opacity)%)" } else { 'En pausa' }
         $script:UiState.NotifyIcon.Text = "ShadeVeil - $stateStr"
+    }
+}
+
+function Request-DeferredSave {
+    [CmdletBinding()]
+    param()
+
+    $saveTimer = $script:UiState.SaveTimer
+    if ($null -ne $saveTimer) {
+        $saveTimer.Stop()
+        $saveTimer.Start()
+    }
+    else {
+        Save-ShadeConfig -Config $script:UiState.Config
     }
 }
 
@@ -149,14 +262,19 @@ function Apply-ShadeState {
     [CmdletBinding()]
     param(
         [bool]$RebuildScreens = $false,
-        [bool]$Persist = $true
+        [bool]$PersistImmediate = $false,
+        [bool]$PersistDeferred = $true
     )
 
     $cfg = $script:UiState.Config
     $win = $script:UiState.Window
 
-    $win.Topmost = [bool]$cfg.KeepPanelAbove
-    Set-OverlayHostContext -MainWindow $win -KeepPanelAbove ([bool]$cfg.KeepPanelAbove)
+    $desiredTop = [bool]$cfg.KeepPanelAbove
+    if ($win.Topmost -ne $desiredTop) {
+        $win.Topmost = $desiredTop
+    }
+
+    Set-OverlayHostContext -MainWindow $win -KeepPanelAbove $desiredTop
 
     Update-OverlayAppearance `
         -IsEnabled ([bool]$cfg.IsEnabled) `
@@ -167,8 +285,14 @@ function Apply-ShadeState {
 
     Update-VisualStatus
 
-    if ($Persist) {
+    if ($PersistImmediate) {
+        if ($null -ne $script:UiState.SaveTimer) {
+            $script:UiState.SaveTimer.Stop()
+        }
         Save-ShadeConfig -Config $cfg
+    }
+    elseif ($PersistDeferred) {
+        Request-DeferredSave
     }
 }
 
@@ -185,12 +309,36 @@ function Sync-ControlsFromConfig {
         $controls['OpacitySlider'].Value = [double]$cfg.Opacity
         $controls['ChkEnableHotkeys'].IsChecked = [bool]$cfg.EnableHotkeys
         $controls['ChkKeepPanelAbove'].IsChecked = [bool]$cfg.KeepPanelAbove
+        $controls['ChkKeepAboveTaskbar'].IsChecked = [bool]$cfg.KeepAboveTaskbar
         $controls['ChkStartMinimized'].IsChecked = [bool]$cfg.StartMinimized
 
+        $matchedPresetTint = $false
         foreach ($tintName in @('RadioTintBlack', 'RadioTintAmber', 'RadioTintSlate', 'RadioTintSepia')) {
             $rb = $controls[$tintName]
             if ($null -ne $rb) {
-                $rb.IsChecked = ([string]$rb.Tag -eq [string]$cfg.TintHex)
+                $isMatch = ([string]$rb.Tag -eq [string]$cfg.TintHex)
+                $rb.IsChecked = $isMatch
+                if ($isMatch) { $matchedPresetTint = $true }
+            }
+        }
+
+        $txtCustom = $controls['TxtCustomHex']
+        $preview = $controls['CustomHexPreview']
+        if ($null -ne $txtCustom) {
+            $txtCustom.Text = [string]$cfg.TintHex
+        }
+        if ($null -ne $preview) {
+            $pColor = [System.Windows.Media.ColorConverter]::ConvertFromString([string]$cfg.TintHex)
+            $pBrush = New-Object System.Windows.Media.SolidColorBrush($pColor)
+            $pBrush.Freeze()
+            $preview.Background = $pBrush
+        }
+
+        if (-not $matchedPresetTint) {
+            $fb = $controls['CustomHexFeedback']
+            if ($null -ne $fb) {
+                $fb.Text = 'Tono personalizado activo'
+                $fb.Foreground = $script:UiState.Brushes['FeedbackOk']
             }
         }
 
@@ -210,19 +358,21 @@ function Set-ShadeOpacityValue {
     [CmdletBinding()]
     param(
         [int]$NewOpacity,
-        [bool]$EnableIfChanged = $false
+        [bool]$EnableIfChanged = $false,
+        [bool]$PersistImmediate = $false
     )
 
     if ($NewOpacity -lt 5) { $NewOpacity = 5 }
     if ($NewOpacity -gt 95) { $NewOpacity = 95 }
 
     $script:UiState.Config.Opacity = $NewOpacity
+    $script:UiState.Config.ActivePresetId = 'custom'
     if ($EnableIfChanged) {
         $script:UiState.Config.IsEnabled = $true
     }
 
     Sync-ControlsFromConfig
-    Apply-ShadeState
+    Apply-ShadeState -PersistImmediate $PersistImmediate -PersistDeferred (-not $PersistImmediate)
 }
 
 function Update-HotkeyRegistration {
@@ -232,6 +382,8 @@ function Update-HotkeyRegistration {
     )
 
     $sink = $script:UiState.HotkeySink
+    $statusLbl = $script:UiState.Controls['HotkeyStatusText']
+
     if ($null -eq $sink -or $sink.Handle -eq [IntPtr]::Zero) {
         return
     }
@@ -244,12 +396,32 @@ function Update-HotkeyRegistration {
     }
 
     if ($Enable) {
-        # Ctrl + Alt + NoRepeat
         [uint32]$mods = 0x0002 -bor 0x0001 -bor 0x4000
-        $ok1 = Register-GlobalHotkey -WindowHandle $sink.Handle -HotkeyId 1 -Modifiers $mods -VirtualKey 0x44 # D
-        $ok2 = Register-GlobalHotkey -WindowHandle $sink.Handle -HotkeyId 2 -Modifiers $mods -VirtualKey 0x26 # Up
-        $ok3 = Register-GlobalHotkey -WindowHandle $sink.Handle -HotkeyId 3 -Modifiers $mods -VirtualKey 0x28 # Down
+        $ok1 = Register-GlobalHotkey -WindowHandle $sink.Handle -HotkeyId 1 -Modifiers $mods -VirtualKey 0x44
+        $ok2 = Register-GlobalHotkey -WindowHandle $sink.Handle -HotkeyId 2 -Modifiers $mods -VirtualKey 0x26
+        $ok3 = Register-GlobalHotkey -WindowHandle $sink.Handle -HotkeyId 3 -Modifiers $mods -VirtualKey 0x28
         $script:UiState.HotkeysRegistered = ($ok1 -or $ok2 -or $ok3)
+
+        if ($null -ne $statusLbl) {
+            if ($ok1 -and $ok2 -and $ok3) {
+                $statusLbl.Text = 'Todos los atajos globales estan activos'
+                $statusLbl.Foreground = $script:UiState.Brushes['FeedbackOk']
+            }
+            elseif ($script:UiState.HotkeysRegistered) {
+                $statusLbl.Text = 'Algunos atajos estan ocupados por otra aplicacion'
+                $statusLbl.Foreground = $script:UiState.Brushes['FeedbackErr']
+            }
+            else {
+                $statusLbl.Text = 'No se pudieron registrar (ocupados por otro programa)'
+                $statusLbl.Foreground = $script:UiState.Brushes['FeedbackErr']
+            }
+        }
+    }
+    else {
+        if ($null -ne $statusLbl) {
+            $statusLbl.Text = 'Atajos globales desactivados'
+            $statusLbl.Foreground = $script:UiState.Brushes['FeedbackMuted']
+        }
     }
 }
 
@@ -267,7 +439,7 @@ function Show-ShadeControlPanel {
         $win.WindowState = [System.Windows.WindowState]::Normal
     }
     $win.Activate() | Out-Null
-    Sync-OverlayZOrder
+    Sync-OverlayZOrder -Force $true
 }
 
 function Hide-ShadeControlPanelToTray {
@@ -277,7 +449,7 @@ function Hide-ShadeControlPanelToTray {
     $win = $script:UiState.Window
     if ($null -ne $win) {
         $win.Hide()
-        Sync-OverlayZOrder
+        Sync-OverlayZOrder -Force $true
     }
 }
 
@@ -296,7 +468,6 @@ function Initialize-SystemTray {
     $menu = New-Object System.Windows.Forms.ContextMenuStrip
 
     $itemShow = New-Object System.Windows.Forms.ToolStripMenuItem('Mostrar Panel de Control')
-    $itemShow.Font = New-Object System.Drawing.Font($itemShow.Font, [System.Drawing.FontStyle]::Bold)
     $itemShow.Add_Click({
         Show-ShadeControlPanel
     })
@@ -305,18 +476,18 @@ function Initialize-SystemTray {
     $itemToggle.Add_Click({
         $script:UiState.Config.IsEnabled = -not [bool]$script:UiState.Config.IsEnabled
         Sync-ControlsFromConfig
-        Apply-ShadeState
+        Apply-ShadeState -PersistImmediate $true
     })
     $script:UiState.TrayToggleItem = $itemToggle
 
     $item25 = New-Object System.Windows.Forms.ToolStripMenuItem('Opacidad 25% (Suave)')
-    $item25.Add_Click({ Set-ShadeOpacityValue -NewOpacity 25 -EnableIfChanged $true })
+    $item25.Add_Click({ Set-ShadeOpacityValue -NewOpacity 25 -EnableIfChanged $true -PersistImmediate $true })
 
     $item50 = New-Object System.Windows.Forms.ToolStripMenuItem('Opacidad 50% (Privacidad)')
-    $item50.Add_Click({ Set-ShadeOpacityValue -NewOpacity 50 -EnableIfChanged $true })
+    $item50.Add_Click({ Set-ShadeOpacityValue -NewOpacity 50 -EnableIfChanged $true -PersistImmediate $true })
 
     $item75 = New-Object System.Windows.Forms.ToolStripMenuItem('Opacidad 75% (Oscuro)')
-    $item75.Add_Click({ Set-ShadeOpacityValue -NewOpacity 75 -EnableIfChanged $true })
+    $item75.Add_Click({ Set-ShadeOpacityValue -NewOpacity 75 -EnableIfChanged $true -PersistImmediate $true })
 
     $itemExit = New-Object System.Windows.Forms.ToolStripMenuItem('Salir de ShadeVeil')
     $itemExit.Add_Click({
@@ -335,8 +506,17 @@ function Initialize-SystemTray {
     [void]$menu.Items.Add($itemExit)
 
     $tray.ContextMenuStrip = $menu
-    $tray.Add_DoubleClick({
-        Show-ShadeControlPanel
+    $tray.Add_MouseClick({
+        param($sender, $e)
+        if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Left) {
+            $win = $script:UiState.Window
+            if ($null -ne $win -and $win.IsVisible -and $win.WindowState -ne [System.Windows.WindowState]::Minimized) {
+                Hide-ShadeControlPanelToTray
+            }
+            else {
+                Show-ShadeControlPanel
+            }
+        }
     })
 
     $script:UiState.NotifyIcon = $tray
@@ -355,9 +535,32 @@ function Start-ShadeVeilGui {
         $PresetsCatalog
     )
 
+    # Single-instance protection so beginners never stack duplicate dark veils
+    $createdNew = $false
+    $mutex = New-Object System.Threading.Mutex($true, 'Local\ShadeVeil_SingleInstance_v1', [ref]$createdNew)
+    if (-not $createdNew) {
+        try {
+            $existingEvt = [System.Threading.EventWaitHandle]::OpenExisting('Local\ShadeVeil_ShowPanel_v1')
+            [void]$existingEvt.Set()
+            $existingEvt.Dispose()
+        }
+        catch {
+            # Ignore if primary instance is still initializing
+        }
+        $mutex.Dispose()
+        Write-Host '[ShadeVeil] Ya hay una instancia ejecutandose. Mostrando panel existente...' -ForegroundColor Yellow
+        return
+    }
+
+    $wakeEvent = New-Object System.Threading.EventWaitHandle($false, [System.Threading.EventResetMode]::AutoReset, 'Local\ShadeVeil_ShowPanel_v1')
+    $script:UiState.SingleInstanceMutex = $mutex
+    $script:UiState.WakeEvent = $wakeEvent
+
     if (-not (Test-Path -LiteralPath $XamlPath)) {
         throw "No se encontro el archivo de interfaz XAML: $XamlPath"
     }
+
+    Initialize-StaticUiBrushes
 
     $xamlContent = Get-Content -LiteralPath $XamlPath -Raw -Encoding UTF8
     $window = [System.Windows.Markup.XamlReader]::Parse($xamlContent)
@@ -365,21 +568,38 @@ function Start-ShadeVeilGui {
     $script:UiState.Window = $window
     $script:UiState.Config = $InitialConfig
     $script:UiState.PresetsCatalog = $PresetsCatalog
+    $script:UiState.IsClosing = $false
+    $script:UiState.LastVisualEnabled = $null
+    $script:UiState.LastActivePresetId = $null
 
     $controlNames = @(
         'StatusBadge', 'StatusBadgeText', 'PowerLabel', 'PowerToggle',
-        'OpacityPercentText', 'OpacitySlider', 'BtnDecreaseOpacity', 'BtnIncreaseOpacity',
+        'OpacityPercentText', 'OpacityLevelLabel', 'OpacitySlider',
+        'BtnDecreaseOpacity', 'BtnIncreaseOpacity',
         'BtnPresetReading', 'BtnPresetPrivacy', 'BtnPresetFocus', 'BtnPresetStealth',
         'RadioTintBlack', 'RadioTintAmber', 'RadioTintSlate', 'RadioTintSepia',
         'MonitorCountText', 'RadioScopeAll', 'RadioScopePrimary', 'RadioScopeSecondary',
-        'ChkEnableHotkeys', 'ChkKeepPanelAbove', 'ChkStartMinimized',
-        'BtnReset', 'BtnMinimizeToTray'
+        'TxtCustomHex', 'BtnApplyCustomHex', 'CustomHexPreview', 'CustomHexFeedback',
+        'ChkEnableHotkeys', 'HotkeyStatusText', 'ChkKeepPanelAbove', 'ChkKeepAboveTaskbar',
+        'ChkStartMinimized', 'BtnOpenSettingsFolder', 'BtnReset', 'BtnMinimizeToTray'
     )
 
     $script:UiState.Controls = @{}
     foreach ($name in $controlNames) {
         $script:UiState.Controls[$name] = $window.FindName($name)
     }
+
+    # Debounced disk save timer (prevents HDD stutter during rapid drags/scrolls)
+    $saveTimer = New-Object System.Windows.Threading.DispatcherTimer
+    $saveTimer.Interval = [TimeSpan]::FromMilliseconds(350)
+    $saveTimer.Add_Tick({
+        param($sender, $e)
+        $sender.Stop()
+        if ($null -ne $script:UiState.Config) {
+            Save-ShadeConfig -Config $script:UiState.Config
+        }
+    })
+    $script:UiState.SaveTimer = $saveTimer
 
     Initialize-SystemTray
     Update-DisplayCountLabel
@@ -393,11 +613,11 @@ function Start-ShadeVeilGui {
         $val = [int][Math]::Round($sender.Value)
         $script:UiState.Config.Opacity = $val
         $script:UiState.Config.ActivePresetId = 'custom'
-        Apply-ShadeState -Persist $false
+        Apply-ShadeState -PersistImmediate $false -PersistDeferred $true
     })
 
     $slider.Add_PreviewMouseLeftButtonUp({
-        Save-ShadeConfig -Config $script:UiState.Config
+        Request-DeferredSave
     })
 
     $slider.Add_PreviewMouseWheel({
@@ -422,12 +642,12 @@ function Start-ShadeVeilGui {
     $powerToggle.Add_Checked({
         if ($script:UiState.SuppressEvents) { return }
         $script:UiState.Config.IsEnabled = $true
-        Apply-ShadeState
+        Apply-ShadeState -PersistImmediate $true
     })
     $powerToggle.Add_Unchecked({
         if ($script:UiState.SuppressEvents) { return }
         $script:UiState.Config.IsEnabled = $false
-        Apply-ShadeState
+        Apply-ShadeState -PersistImmediate $true
     })
 
     # Preset buttons
@@ -442,8 +662,10 @@ function Start-ShadeVeilGui {
                 $script:UiState.Config.TintHex = ([string]$match.tintHex).ToUpperInvariant()
                 $script:UiState.Config.IsEnabled = $true
                 $script:UiState.Config.ActivePresetId = $presetId
+                $fb = $script:UiState.Controls['CustomHexFeedback']
+                if ($null -ne $fb) { $fb.Text = '' }
                 Sync-ControlsFromConfig
-                Apply-ShadeState
+                Apply-ShadeState -PersistImmediate $true
             }
         })
     }
@@ -456,9 +678,35 @@ function Start-ShadeVeilGui {
             if ($script:UiState.SuppressEvents) { return }
             $script:UiState.Config.TintHex = ([string]$sender.Tag).ToUpperInvariant()
             $script:UiState.Config.ActivePresetId = 'custom'
-            Apply-ShadeState
+            $fb = $script:UiState.Controls['CustomHexFeedback']
+            if ($null -ne $fb) { $fb.Text = '' }
+            Sync-ControlsFromConfig
+            Apply-ShadeState -PersistImmediate $true
         })
     }
+
+    # Custom Hex Color Apply
+    $script:UiState.Controls['BtnApplyCustomHex'].Add_Click({
+        $txtBox = $script:UiState.Controls['TxtCustomHex']
+        $fb = $script:UiState.Controls['CustomHexFeedback']
+        $normalized = Resolve-NormalizedHexColor -Hex ([string]$txtBox.Text)
+        if ($null -eq $normalized) {
+            if ($null -ne $fb) {
+                $fb.Text = 'Usa formato #RRGGBB'
+                $fb.Foreground = $script:UiState.Brushes['FeedbackErr']
+            }
+            return
+        }
+
+        $script:UiState.Config.TintHex = $normalized
+        $script:UiState.Config.ActivePresetId = 'custom'
+        Sync-ControlsFromConfig
+        Apply-ShadeState -PersistImmediate $true
+        if ($null -ne $fb) {
+            $fb.Text = "Aplicado ($normalized)"
+            $fb.Foreground = $script:UiState.Brushes['FeedbackOk']
+        }
+    })
 
     # Monitor scope RadioButtons
     foreach ($scopeName in @('RadioScopeAll', 'RadioScopePrimary', 'RadioScopeSecondary')) {
@@ -467,7 +715,7 @@ function Start-ShadeVeilGui {
             param($sender, $e)
             if ($script:UiState.SuppressEvents) { return }
             $script:UiState.Config.MonitorScope = [string]$sender.Tag
-            Apply-ShadeState -RebuildScreens $true
+            Apply-ShadeState -RebuildScreens $true -PersistImmediate $true
         })
     }
 
@@ -477,37 +725,59 @@ function Start-ShadeVeilGui {
         if ($script:UiState.SuppressEvents) { return }
         $script:UiState.Config.EnableHotkeys = $true
         Update-HotkeyRegistration -Enable $true
-        Save-ShadeConfig -Config $script:UiState.Config
+        Request-DeferredSave
     })
     $chkHotkeys.Add_Unchecked({
         if ($script:UiState.SuppressEvents) { return }
         $script:UiState.Config.EnableHotkeys = $false
         Update-HotkeyRegistration -Enable $false
-        Save-ShadeConfig -Config $script:UiState.Config
+        Request-DeferredSave
     })
 
     $chkTop = $script:UiState.Controls['ChkKeepPanelAbove']
     $chkTop.Add_Checked({
         if ($script:UiState.SuppressEvents) { return }
         $script:UiState.Config.KeepPanelAbove = $true
-        Apply-ShadeState
+        Apply-ShadeState -PersistImmediate $true
     })
     $chkTop.Add_Unchecked({
         if ($script:UiState.SuppressEvents) { return }
         $script:UiState.Config.KeepPanelAbove = $false
-        Apply-ShadeState
+        Apply-ShadeState -PersistImmediate $true
+    })
+
+    $chkTaskbar = $script:UiState.Controls['ChkKeepAboveTaskbar']
+    $chkTaskbar.Add_Checked({
+        if ($script:UiState.SuppressEvents) { return }
+        $script:UiState.Config.KeepAboveTaskbar = $true
+        Sync-OverlayZOrder -Force $true
+        Request-DeferredSave
+    })
+    $chkTaskbar.Add_Unchecked({
+        if ($script:UiState.SuppressEvents) { return }
+        $script:UiState.Config.KeepAboveTaskbar = $false
+        Request-DeferredSave
     })
 
     $chkMin = $script:UiState.Controls['ChkStartMinimized']
     $chkMin.Add_Checked({
         if ($script:UiState.SuppressEvents) { return }
         $script:UiState.Config.StartMinimized = $true
-        Save-ShadeConfig -Config $script:UiState.Config
+        Request-DeferredSave
     })
     $chkMin.Add_Unchecked({
         if ($script:UiState.SuppressEvents) { return }
         $script:UiState.Config.StartMinimized = $false
-        Save-ShadeConfig -Config $script:UiState.Config
+        Request-DeferredSave
+    })
+
+    # Open settings directory in Explorer
+    $script:UiState.Controls['BtnOpenSettingsFolder'].Add_Click({
+        $dir = Get-SettingsDirectoryPath
+        if (-not (Test-Path -LiteralPath $dir)) {
+            [void](New-Item -Path $dir -ItemType Directory -Force)
+        }
+        Start-Process -FilePath 'explorer.exe' -ArgumentList $dir
     })
 
     # Footer Buttons
@@ -518,12 +788,52 @@ function Start-ShadeVeilGui {
         $script:UiState.Config.TintHex = $def.TintHex
         $script:UiState.Config.MonitorScope = $def.MonitorScope
         $script:UiState.Config.KeepPanelAbove = $def.KeepPanelAbove
+        $script:UiState.Config.KeepAboveTaskbar = $def.KeepAboveTaskbar
+        $script:UiState.Config.ActivePresetId = 'custom'
+        $fb = $script:UiState.Controls['CustomHexFeedback']
+        if ($null -ne $fb) { $fb.Text = '' }
         Sync-ControlsFromConfig
-        Apply-ShadeState -RebuildScreens $true
+        Apply-ShadeState -RebuildScreens $true -PersistImmediate $true
     })
 
     $script:UiState.Controls['BtnMinimizeToTray'].Add_Click({
         Hide-ShadeControlPanelToTray
+    })
+
+    # Intuitive local keyboard shortcuts when control window has focus
+    $window.Add_KeyDown({
+        param($sender, $e)
+        $focused = [System.Windows.Input.Keyboard]::FocusedElement
+        if ($focused -is [System.Windows.Controls.TextBox]) {
+            return
+        }
+
+        switch ($e.Key) {
+            ([System.Windows.Input.Key]::Escape) {
+                if ([bool]$script:UiState.Config.IsEnabled) {
+                    $script:UiState.Config.IsEnabled = $false
+                    Sync-ControlsFromConfig
+                    Apply-ShadeState -PersistImmediate $true
+                    $e.Handled = $true
+                }
+            }
+            ([System.Windows.Input.Key]::Add) {
+                Set-ShadeOpacityValue -NewOpacity ([int]$script:UiState.Config.Opacity + 5) -EnableIfChanged $false
+                $e.Handled = $true
+            }
+            ([System.Windows.Input.Key]::OemPlus) {
+                Set-ShadeOpacityValue -NewOpacity ([int]$script:UiState.Config.Opacity + 5) -EnableIfChanged $false
+                $e.Handled = $true
+            }
+            ([System.Windows.Input.Key]::Subtract) {
+                Set-ShadeOpacityValue -NewOpacity ([int]$script:UiState.Config.Opacity - 5) -EnableIfChanged $false
+                $e.Handled = $true
+            }
+            ([System.Windows.Input.Key]::OemMinus) {
+                Set-ShadeOpacityValue -NewOpacity ([int]$script:UiState.Config.Opacity - 5) -EnableIfChanged $false
+                $e.Handled = $true
+            }
+        }
     })
 
     # Global Hotkey sink
@@ -546,21 +856,31 @@ function Start-ShadeVeilGui {
     })
     $script:UiState.HotkeySink = $sink
 
-    # Periodic lightweight Z-Order guard (keeps veil above Windows Taskbar)
-    $timer = New-Object System.Windows.Threading.DispatcherTimer
-    $timer.Interval = [TimeSpan]::FromMilliseconds(1500)
-    $timer.Add_Tick({
-        Sync-OverlayZOrder
+    # Unified ultra-light 1s heartbeat: checks single-instance wake & idle-free Z-order
+    $heartbeat = New-Object System.Windows.Threading.DispatcherTimer
+    $heartbeat.Interval = [TimeSpan]::FromMilliseconds(1000)
+    $heartbeat.Add_Tick({
+        if ($script:UiState.IsClosing) { return }
+
+        if ($null -ne $script:UiState.WakeEvent -and $script:UiState.WakeEvent.WaitOne(0)) {
+            Show-ShadeControlPanel
+        }
+
+        if ([bool]$script:UiState.Config.IsEnabled -and [bool]$script:UiState.Config.KeepAboveTaskbar) {
+            Sync-OverlayZOrder -Force $false
+        }
     })
-    $script:UiState.ZOrderTimer = $timer
+    $script:UiState.HeartbeatTimer = $heartbeat
 
     # Monitor topology change listener
     $dispHandler = [System.EventHandler]{
         param($sender, $e)
-        if ($null -ne $script:UiState.Window) {
+        if (-not $script:UiState.IsClosing -and $null -ne $script:UiState.Window) {
             [void]$script:UiState.Window.Dispatcher.BeginInvoke([Action]{
-                Update-DisplayCountLabel
-                Apply-ShadeState -RebuildScreens $true -Persist $false
+                if (-not $script:UiState.IsClosing) {
+                    Update-DisplayCountLabel
+                    Apply-ShadeState -RebuildScreens $true -PersistDeferred $false
+                }
             })
         }
     }
@@ -569,8 +889,8 @@ function Start-ShadeVeilGui {
 
     $window.Add_Loaded({
         Update-HotkeyRegistration -Enable ([bool]$script:UiState.Config.EnableHotkeys)
-        Apply-ShadeState -RebuildScreens $true -Persist $false
-        $script:UiState.ZOrderTimer.Start()
+        Apply-ShadeState -RebuildScreens $true -PersistDeferred $false
+        $script:UiState.HeartbeatTimer.Start()
 
         if ([bool]$script:UiState.Config.StartMinimized) {
             Hide-ShadeControlPanelToTray
@@ -578,14 +898,17 @@ function Start-ShadeVeilGui {
     })
 
     $window.Add_StateChanged({
-        Sync-OverlayZOrder
+        if (-not $script:UiState.IsClosing) {
+            Sync-OverlayZOrder -Force $true
+        }
     })
 
     $window.Add_Closed({
+        $script:UiState.IsClosing = $true
+
         try {
-            if ($null -ne $script:UiState.ZOrderTimer) {
-                $script:UiState.ZOrderTimer.Stop()
-            }
+            if ($null -ne $script:UiState.HeartbeatTimer) { $script:UiState.HeartbeatTimer.Stop() }
+            if ($null -ne $script:UiState.SaveTimer) { $script:UiState.SaveTimer.Stop() }
         }
         catch { }
 
@@ -616,6 +939,21 @@ function Start-ShadeVeilGui {
             }
             if ($null -ne $script:UiState.TrayIconHandle) {
                 $script:UiState.TrayIconHandle.Dispose()
+            }
+            if ($script:UiState.TrayRawHIcon -ne [IntPtr]::Zero) {
+                Invoke-DestroyNativeIcon -IconHandle $script:UiState.TrayRawHIcon
+                $script:UiState.TrayRawHIcon = [IntPtr]::Zero
+            }
+        }
+        catch { }
+
+        try {
+            if ($null -ne $script:UiState.WakeEvent) {
+                $script:UiState.WakeEvent.Dispose()
+            }
+            if ($null -ne $script:UiState.SingleInstanceMutex) {
+                $script:UiState.SingleInstanceMutex.ReleaseMutex()
+                $script:UiState.SingleInstanceMutex.Dispose()
             }
         }
         catch { }

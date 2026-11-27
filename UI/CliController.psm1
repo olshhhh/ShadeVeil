@@ -19,10 +19,11 @@ function Start-ShadeVeilCli {
         Write-Host '  ShadeVeil - Consola de Configuracion y Diagnostico' -ForegroundColor White
         Write-Host '============================================================' -ForegroundColor Cyan
         Write-Host ''
-        Write-Host ("  Estado predeterminado : {0}" -f $(if ($Config.IsEnabled) { 'ACTIVO' } else { 'EN PAUSA' })) -ForegroundColor Yellow
-        Write-Host ("  Opacidad actual       : {0}%" -f $Config.Opacity) -ForegroundColor Green
-        Write-Host ("  Tinte hexadecimal     : {0}" -f $Config.TintHex) -ForegroundColor Gray
-        Write-Host ("  Alcance monitores     : {0}" -f $Config.MonitorScope) -ForegroundColor Gray
+        Write-Host ("  Estado del velo       : {0}" -f $(if ($Config.IsEnabled) { 'ACTIVO' } else { 'EN PAUSA' })) -ForegroundColor Yellow
+        Write-Host ("  Nivel de opacidad     : {0}%" -f $Config.Opacity) -ForegroundColor Green
+        Write-Host ("  Color del tinte       : {0}" -f $Config.TintHex) -ForegroundColor Gray
+        Write-Host ("  Alcance pantallas     : {0}" -f $Config.MonitorScope) -ForegroundColor Gray
+        Write-Host ("  Proteger barra tareas : {0}" -f $(if ($Config.KeepAboveTaskbar) { 'Si' } else { 'No (Modo Eco)' })) -ForegroundColor Gray
         Write-Host ("  Archivo de ajustes    : {0}" -f (Get-SettingsFilePath)) -ForegroundColor DarkGray
         Write-Host ''
         Write-Host ("  Pantallas detectadas ({0}):" -f @($inv.Displays).Count) -ForegroundColor Cyan
@@ -37,9 +38,11 @@ function Start-ShadeVeilCli {
         Write-Host '  Opciones:' -ForegroundColor White
         Write-Host '    [1] Ajustar opacidad (5% - 95%)'
         Write-Host '    [2] Aplicar un modo rapido (Preset)'
-        Write-Host '    [3] Cambiar alcance de monitores'
-        Write-Host '    [4] Alternar estado Activo / En Pausa'
-        Write-Host '    [5] Guardar ajustes y abrir interfaz grafica (GUI)'
+        Write-Host '    [3] Ingresar color hexadecimal personalizado (#RRGGBB)'
+        Write-Host '    [4] Cambiar alcance de monitores'
+        Write-Host '    [5] Alternar estado Activo / En Pausa'
+        Write-Host '    [6] Restablecer valores predeterminados'
+        Write-Host '    [7] Guardar ajustes y abrir interfaz grafica (GUI)'
         Write-Host '    [0] Guardar y salir'
         Write-Host ''
 
@@ -75,6 +78,15 @@ function Start-ShadeVeilCli {
                 }
             }
             '3' {
+                $rawHex = Read-Host 'Ingresa color hexadecimal (ej. #000000 o #1C0F00)'
+                $norm = Resolve-NormalizedHexColor -Hex $rawHex
+                if ($null -ne $norm) {
+                    $Config.TintHex = $norm
+                    $Config.ActivePresetId = 'custom'
+                    Save-ShadeConfig -Config $Config
+                }
+            }
+            '4' {
                 Write-Host ''
                 Write-Host '    [1] Todas las pantallas (AllScreens)'
                 Write-Host '    [2] Solo pantalla principal (PrimaryOnly)'
@@ -87,11 +99,18 @@ function Start-ShadeVeilCli {
                 }
                 Save-ShadeConfig -Config $Config
             }
-            '4' {
+            '5' {
                 $Config.IsEnabled = -not [bool]$Config.IsEnabled
                 Save-ShadeConfig -Config $Config
             }
-            '5' {
+            '6' {
+                $def = Get-DefaultShadeConfig
+                foreach ($k in $def.Keys) {
+                    $Config[$k] = $def[$k]
+                }
+                Save-ShadeConfig -Config $Config
+            }
+            '7' {
                 Save-ShadeConfig -Config $Config
                 return 'LaunchGui'
             }

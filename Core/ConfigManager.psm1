@@ -44,6 +44,7 @@ function Get-DefaultShadeConfig {
         MonitorScope     = 'AllScreens'
         EnableHotkeys    = $true
         KeepPanelAbove   = $true
+        KeepAboveTaskbar = $true
         StartMinimized   = $false
         ActivePresetId   = 'custom'
     }
@@ -58,7 +59,29 @@ function Test-ValidHexColor {
     if ([string]::IsNullOrWhiteSpace($Hex)) {
         return $false
     }
-    return ($Hex -match '^#[0-9A-Fa-f]{6}$')
+    return ($Hex.Trim() -match '^#[0-9A-Fa-f]{6}$')
+}
+
+function Resolve-NormalizedHexColor {
+    [CmdletBinding()]
+    param(
+        [string]$Hex
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Hex)) {
+        return $null
+    }
+
+    $trimmed = $Hex.Trim()
+    if (-not $trimmed.StartsWith('#')) {
+        $trimmed = '#' + $trimmed
+    }
+
+    if ($trimmed -match '^#[0-9A-Fa-f]{6}$') {
+        return $trimmed.ToUpperInvariant()
+    }
+
+    return $null
 }
 
 function Get-ShadeConfig {
@@ -83,8 +106,9 @@ function Get-ShadeConfig {
         if ($opacityRaw -gt 95) { $opacityRaw = 95 }
 
         $tintHex = [string](Get-SafeJsonProperty -InputObject $parsed -PropertyName 'TintHex' -DefaultValue $defaults.TintHex)
-        if (-not (Test-ValidHexColor -Hex $tintHex)) {
-            $tintHex = $defaults.TintHex
+        $normalizedTint = Resolve-NormalizedHexColor -Hex $tintHex
+        if ($null -eq $normalizedTint) {
+            $normalizedTint = $defaults.TintHex
         }
 
         $scope = [string](Get-SafeJsonProperty -InputObject $parsed -PropertyName 'MonitorScope' -DefaultValue $defaults.MonitorScope)
@@ -94,18 +118,20 @@ function Get-ShadeConfig {
 
         $enableHotkeys = [bool](Get-SafeJsonProperty -InputObject $parsed -PropertyName 'EnableHotkeys' -DefaultValue $defaults.EnableHotkeys)
         $keepPanelAbove = [bool](Get-SafeJsonProperty -InputObject $parsed -PropertyName 'KeepPanelAbove' -DefaultValue $defaults.KeepPanelAbove)
+        $keepAboveTaskbar = [bool](Get-SafeJsonProperty -InputObject $parsed -PropertyName 'KeepAboveTaskbar' -DefaultValue $defaults.KeepAboveTaskbar)
         $startMinimized = [bool](Get-SafeJsonProperty -InputObject $parsed -PropertyName 'StartMinimized' -DefaultValue $defaults.StartMinimized)
         $presetId = [string](Get-SafeJsonProperty -InputObject $parsed -PropertyName 'ActivePresetId' -DefaultValue 'custom')
 
         return [ordered]@{
-            IsEnabled      = $isEnabled
-            Opacity        = $opacityRaw
-            TintHex        = $tintHex.ToUpperInvariant()
-            MonitorScope   = $scope
-            EnableHotkeys  = $enableHotkeys
-            KeepPanelAbove = $keepPanelAbove
-            StartMinimized = $startMinimized
-            ActivePresetId = $presetId
+            IsEnabled        = $isEnabled
+            Opacity          = $opacityRaw
+            TintHex          = $normalizedTint
+            MonitorScope     = $scope
+            EnableHotkeys    = $enableHotkeys
+            KeepPanelAbove   = $keepPanelAbove
+            KeepAboveTaskbar = $keepAboveTaskbar
+            StartMinimized   = $startMinimized
+            ActivePresetId   = $presetId
         }
     }
     catch {
@@ -175,6 +201,13 @@ function Get-ShadePresetsCatalog {
     }
 }
 
+function Get-SettingsDirectoryPath {
+    [CmdletBinding()]
+    param()
+
+    return $script:AppDataRoot
+}
+
 function Get-SettingsFilePath {
     [CmdletBinding()]
     param()
@@ -186,8 +219,10 @@ Export-ModuleMember -Function @(
     'Get-SafeJsonProperty',
     'Get-DefaultShadeConfig',
     'Test-ValidHexColor',
+    'Resolve-NormalizedHexColor',
     'Get-ShadeConfig',
     'Save-ShadeConfig',
     'Get-ShadePresetsCatalog',
+    'Get-SettingsDirectoryPath',
     'Get-SettingsFilePath'
 )

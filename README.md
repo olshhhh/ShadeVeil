@@ -1,18 +1,18 @@
 # ShadeVeil
 
-Utilidad nativa de escritorio para Windows 10/11 (PowerShell 5.1 y 7+ / WPF) que integra un **velo de pantalla click-through** para reducir la iluminación percibida por privacidad y comodidad visual, con control deslizante intuitivo de opacidad, soporte multi-monitor, bandeja del sistema y atajos globales.
+Utilidad nativa y ultraligera para Windows 10/11 (PowerShell 5.1 y 7+ / WPF) que superpone un **velo de atenuación *click-through*** en pantalla para mejorar la privacidad y el descanso visual, con un control deslizante intuitivo de opacidad (5% – 95%), soporte multi-monitor, bandeja del sistema y atajos globales.
 
 ---
 
 ## Ejecución Zero-Install (1 línea)
 
-Ejecuta en PowerShell sin instalar dependencias ni binarios:
+Ejecuta en PowerShell sin instalar dependencias, ejecutables ni librerías externas:
 
 ```powershell
 irm https://raw.githubusercontent.com/olshhhh/ShadeVeil/main/bootstrap.ps1 | iex
 ```
 
-Para iniciar directamente en modo consola (`-Cli`) o con un perfil predefinido (`reading`, `privacy`, `focus`, `stealth`):
+Para iniciar con un perfil (`reading`, `privacy`, `focus`, `stealth`), en modo consola (`-Cli`) o ejecutar la verificación de solo lectura (`-Test`):
 
 ```powershell
 $sb = [scriptblock]::Create((irm https://raw.githubusercontent.com/olshhhh/ShadeVeil/main/bootstrap.ps1))
@@ -21,22 +21,32 @@ $sb = [scriptblock]::Create((irm https://raw.githubusercontent.com/olshhhh/Shade
 
 ---
 
-## Características principales
+## Pensado para principiantes y usuarios avanzados
 
-- **Control deslizante intuitivo de opacidad (5% – 95%)**: Ajuste inmediato con arrastre suave, clic directo sobre la barra, rueda del mouse sobre el deslizador y botones `-5%` / `+5%`.
-- **100% Click-Through y sin robo de foco**: Utiliza banderas nativas Win32 (`WS_EX_TRANSPARENT`, `WS_EX_LAYERED`, `WS_EX_TOOLWINDOW`, `WS_EX_NOACTIVATE`) para que todos tus clics, atajos de teclado y ventanas sigan funcionando con total normalidad debajo del velo.
-- **Modos rápidos y tonalidades ergonómicas**:
-  - *Lectura Nocturna* (35%, Ámbar Nocturno)
-  - *Privacidad Oficina* (60%, Pizarra Privacidad)
-  - *Focus Profundo* (75%, Negro Puro)
-  - *Velo Máximo* (88%, Negro Puro)
-  - Selector manual de tinte: Negro Puro, Ámbar Nocturno, Pizarra Privacidad y Sepia Suave.
-- **Multi-monitor inteligente**: Elige aplicar el velo sobre todas las pantallas, solo la principal o solo las secundarias, con detección automática de cambios de topología (`DisplaySettingsChanged`).
-- **Bandeja del sistema (System Tray) y atajos globales**:
-  - `Ctrl + Alt + D`: Activar o pausar el velo al instante.
-  - `Ctrl + Alt + Flecha Arriba / Abajo`: Subir o bajar la opacidad en pasos de 5%.
-  - Oculta el panel en la bandeja manteniendo el velo activo.
-- **Sin privilegios de administrador**: Corre íntegramente en espacio de usuario y guarda las preferencias en `%LOCALAPPDATA%\ShadeVeil\settings.json`.
+### Para uso diario simple
+- **Control deslizante intuitivo (5% – 95%)**: Arrastra la barra, haz clic en cualquier punto, usa la rueda del mouse o pulsa `-5%` / `+5%`. Incluye una etiqueta descriptiva en tiempo real (*Lectura cómoda*, *Privacidad equilibrada*, etc.) y tope de seguridad al 95% para evitar pantallas totalmente negras.
+- **Modos rápidos en 1 clic**: *Lectura Nocturna* (35% ámbar), *Privacidad Oficina* (60% pizarra), *Focus Profundo* (75% negro) y *Velo Máximo* (88% negro).
+- **Seguridad y emergencia**: Pulsa `Ctrl + Alt + D` desde cualquier programa (o `Esc` dentro de la ventana) para pausar el velo al instante.
+- **Instancia única automática**: Si lo abres dos veces por error, no apila dos velos oscuros; simplemente trae tu panel existente al frente.
+
+### Para usuarios avanzados y PCs antiguos
+- **Motor optimizado para hardware modesto**: Pinceles congelados en caché (`Freeze()`), cero sombras o desenfoques costosos (`DropShadowEffect`/`BlurEffect`), guardado diferido en disco (350 ms) para evitar escrituras en cada paso del deslizador y sincronización Z-Order inactiva cuando el usuario no cambia de ventana.
+- **100% Click-Through y Per-Monitor DPI**: Banderas Win32 nativas (`WS_EX_TRANSPARENT`, `WS_EX_LAYERED`, `WS_EX_TOOLWINDOW`, `WS_EX_NOACTIVATE`) y `PerMonitorAwareV2` para alineación exacta en monitores con distinto escalado.
+- **Opciones avanzadas colapsables**: Color hexadecimal personalizado (`#RRGGBB`), estado en vivo del registro de atajos globales, modo Eco (opcionalmente desactivar protección sobre barra de tareas en PCs muy antiguos) y acceso directo a `%LOCALAPPDATA%\ShadeVeil\settings.json`.
+- **Atajos**:
+  - `Ctrl + Alt + D`: Activar / pausar velo globalmente.
+  - `Ctrl + Alt + ↑ / ↓`: Subir o bajar opacidad en ±5%.
+  - Clic izquierdo en el icono de bandeja: Mostrar u ocultar el panel de control.
+
+---
+
+## Verificación automática (solo lectura)
+
+Puedes validar sintaxis AST, integridad JSON/XAML, importación de módulos en `Set-StrictMode -Version Latest` y sincronización del manifiesto ejecutando:
+
+```powershell
+.\Tests\Verify-ShadeVeil.ps1
+```
 
 ---
 
@@ -45,17 +55,19 @@ $sb = [scriptblock]::Create((irm https://raw.githubusercontent.com/olshhhh/Shade
 ```text
 /
 ├── bootstrap.ps1                 # Lanzador Zero-Install remoto
-├── ShadeVeil.ps1                 # Orquestador principal (STA / GUI vs CLI)
+├── ShadeVeil.ps1                 # Orquestador principal (DPI, STA / GUI vs CLI)
 ├── Core/
-│   ├── Win32Interop.psm1         # Interoperabilidad Win32 (click-through, Z-order, hotkeys, CIM)
-│   ├── OverlayManager.psm1       # Ventanas superpuestas multi-monitor con pinceles congelados
+│   ├── Win32Interop.psm1         # Interoperabilidad Win32 (click-through, DPI, Z-order, hotkeys, CIM)
+│   ├── OverlayManager.psm1       # Ventanas superpuestas multi-monitor con caché de pinceles
 │   └── ConfigManager.psm1        # Persistencia JSON segura y catálogo de presets
 ├── UI/
-│   ├── MainWindow.xaml           # Interfaz WPF nativa en modo oscuro ergonómico
-│   ├── GuiController.psm1        # Controlador WPF thread-safe y bandeja del sistema
+│   ├── MainWindow.xaml           # Interfaz WPF ligera, responsiva y sin efectos pesados
+│   ├── GuiController.psm1        # Controlador WPF thread-safe, instancia única y bandeja
 │   └── CliController.psm1        # Consola interactiva (-Cli)
 ├── Data/
 │   └── presets.json              # Perfiles y tintes predeterminados
+├── Tests/
+│   └── Verify-ShadeVeil.ps1      # Pruebas automatizadas en modo solo lectura
 ├── README.md
 └── LICENSE
 ```
