@@ -1,0 +1,6 @@
+{
+  "name": "ShadeVeil",
+  "description": "Utilidad nativa de Windows para atenuar el brillo percibido de pantalla por privacidad y comodidad ocular con control deslizante de opacidad.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

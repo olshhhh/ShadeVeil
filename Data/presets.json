@@ -1,0 +1,62 @@
+{
+  "presets": [
+    {
+      "id": "reading",
+      "name": "Lectura Nocturna",
+      "description": "Atenuacion calida suave para leer de noche sin fatiga visual.",
+      "opacity": 35,
+      "tintHex": "#1C0F00",
+      "tintName": "Ambar Nocturno"
+    },
+    {
+      "id": "privacy",
+      "name": "Privacidad Oficina",
+      "description": "Reduce rapidamente la visibilidad lateral en espacios compartidos.",
+      "opacity": 60,
+      "tintHex": "#0B111E",
+      "tintName": "Pizarra Privacidad"
+    },
+    {
+      "id": "focus",
+      "name": "Focus Profundo",
+      "description": "Velo oscuro equilibrado para sesiones largas de codigo o multimedia.",
+      "opacity": 75,
+      "tintHex": "#000000",
+      "tintName": "Negro Puro"
+    },
+    {
+      "id": "stealth",
+      "name": "Velo Maximo",
+      "description": "Maxima discrecion visual manteniendo legibilidad minima en primer plano.",
+      "opacity": 88,
+      "tintHex": "#000000",
+      "tintName": "Negro Puro"
+    }
+  ],
+  "tints": [
+    {
+      "id": "pure-black",
+      "name": "Negro Puro",
+      "hex": "#000000",
+      "previewHex": "#111318"
+    },
+    {
+      "id": "warm-amber",
+      "name": "Ambar Nocturno",
+      "hex": "#1C0F00",
+      "previewHex": "#92400E"
+    },
+    {
+      "id": "slate-privacy",
+      "name": "Pizarra Privacidad",
+      "hex": "#0B111E",
+      "previewHex": "#1E3A8A"
+    },
+    {
+      "id": "soft-sepia",
+      "name": "Sepia Suave",
+      "hex": "#141008",
+      "previewHex": "#786238"
+    }
+  ]
+}
